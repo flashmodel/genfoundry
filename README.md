@@ -1,12 +1,12 @@
-# GenFoundry
+# genfoundry
 
-GenFoundry is a lightweight, cross-platform agent supervisor and process orchestration SDK designed to supervise, bridge, and control external CLI-based AI coding agents.
+genfoundry is a lightweight, cross-platform agent supervisor and process orchestration SDK designed to supervise, bridge, and control external CLI-based AI coding agents.
 
 ## Overview
 
 Modern AI coding agents (such as Claude Code, Codex, OpenCode, and Pi) are packaged as standalone command-line tools that interact through various protocols (streaming NDJSON, JSON-RPC over stdio, or ACP/HTTP). 
 
-GenFoundry acts as the **Supervisor Layer** between client applications (such as VS Code extensions, Sublime Text plugins, IDEs, or automated pipelines) and these agent CLI subprocesses.
+genfoundry acts as the **Supervisor Layer** between client applications (such as VS Code extensions, Sublime Text plugins, IDEs, or automated pipelines) and these agent CLI subprocesses.
 
 ### Core Supervisor Capabilities
 
