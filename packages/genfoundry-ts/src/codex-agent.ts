@@ -1,10 +1,12 @@
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { BaseAgent, Message, PermissionResult, SessionInfo, SessionTail } from './base-agent';
 import * as readline from 'readline';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { logger } from './logger';
+
+export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 
 export function findCodexCli(): string {
     const commonPaths: string[] = [];
@@ -38,6 +40,98 @@ export function findCodexCli(): string {
     return 'codex'; // Fallback to PATH
 }
 
+/**
+ * Find all .git directories for workspace (root, parent repo, and submodules).
+ * Scoped strictly to the logical Git repository belonging to workspaceRoot.
+ */
+export function findGitDirs(workspaceRoot?: string): string[] {
+    if (!workspaceRoot) {
+        return [];
+    }
+
+    let root: string;
+    try {
+        if (!fs.existsSync(workspaceRoot) || !fs.statSync(workspaceRoot).isDirectory()) {
+            return [];
+        }
+        root = path.resolve(workspaceRoot);
+    } catch {
+        return [];
+    }
+
+    const gitDirs = new Set<string>();
+
+    const addPath = (p: string) => {
+        const absP = path.isAbsolute(p) ? path.resolve(p) : path.resolve(root, p);
+        try {
+            if (!fs.existsSync(absP)) return;
+            const stat = fs.statSync(absP);
+            if (stat.isDirectory()) {
+                gitDirs.add(absP);
+            } else if (stat.isFile()) {
+                gitDirs.add(absP);
+                const txt = fs.readFileSync(absP, 'utf-8').trim();
+                if (txt.startsWith('gitdir:')) {
+                    const target = path.resolve(path.dirname(absP), txt.slice(7).trim());
+                    gitDirs.add(target);
+                    // Resolve worktree commondir (shared objects and refs)
+                    const commondirFile = path.join(target, 'commondir');
+                    if (fs.existsSync(commondirFile) && fs.statSync(commondirFile).isFile()) {
+                        const cTarget = path.resolve(target, fs.readFileSync(commondirFile, 'utf-8').trim());
+                        gitDirs.add(cTarget);
+                    }
+                }
+            }
+        } catch {
+            // Ignore inaccessible paths
+        }
+    };
+
+    // 1. Resolve root/parent git repository via git CLI
+    try {
+        const res = spawnSync('git', ['rev-parse', '--git-dir', '--git-common-dir'], {
+            cwd: root,
+            encoding: 'utf-8',
+            timeout: 2000,
+            windowsHide: true,
+        });
+        if (res.status === 0 && res.stdout) {
+            for (const line of res.stdout.split(/\r?\n/)) {
+                if (line.trim()) {
+                    addPath(line.trim());
+                }
+            }
+        }
+    } catch {
+        // git command might not be found or timed out
+    }
+
+    // Direct check on workspace root
+    addPath(path.join(root, '.git'));
+
+    // 2. Scan nested submodules / monorepos (prune heavy & hidden dirs)
+    const ignore = new Set(['node_modules', '.venv', 'venv', 'dist', 'build', 'target', '.git']);
+    const scanDir = (currentDir: string) => {
+        try {
+            const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.name === '.git') {
+                    addPath(path.join(currentDir, '.git'));
+                } else if (entry.isDirectory()) {
+                    if (!ignore.has(entry.name) && !entry.name.startsWith('.')) {
+                        scanDir(path.join(currentDir, entry.name));
+                    }
+                }
+            }
+        } catch {
+            // Permission denied or unreadable directory
+        }
+    };
+    scanDir(root);
+
+    return Array.from(gitDirs).sort();
+}
+
 export class CodexAgent extends BaseAgent {
     private process: ChildProcess | null = null;
     private isConnected: boolean = false;
@@ -50,13 +144,38 @@ export class CodexAgent extends BaseAgent {
     private planText: string = "";
     private model: string | null = null;
     private cliPath: string;
+    private sandboxMode?: CodexSandboxMode;
 
-    constructor(cwd: string, cliPath?: string, env?: Record<string, string>, addDirs?: string[], sessionId?: string) {
+    constructor(
+        cwd: string,
+        cliPath?: string,
+        env?: Record<string, string>,
+        addDirs?: string[],
+        sessionId?: string,
+        sandboxMode?: CodexSandboxMode
+    ) {
         super(cwd, env, addDirs, sessionId);
         this.cliPath = cliPath || findCodexCli();
+        this.sandboxMode = sandboxMode;
         if (this.sessionId) {
             this.threadId = this.sessionId;
         }
+    }
+
+    public setSandboxMode(mode: CodexSandboxMode): void {
+        this.sandboxMode = mode;
+    }
+
+    public getSandboxMode(): CodexSandboxMode | undefined {
+        return this.sandboxMode;
+    }
+
+    protected spawnProcess(cmdArgs: string[], spawnEnv: any): ChildProcess {
+        return spawn(this.cliPath, cmdArgs, {
+            env: spawnEnv,
+            cwd: this.cwd || process.cwd(),
+            shell: process.platform === 'win32'
+        });
     }
 
     async connect(prompt?: string): Promise<void> {
@@ -68,11 +187,7 @@ export class CodexAgent extends BaseAgent {
         const spawnEnv = { ...process.env, ...this.env };
 
         try {
-            this.process = spawn(this.cliPath, cmdArgs, {
-                env: spawnEnv,
-                cwd: this.cwd || process.cwd(),
-                shell: process.platform === 'win32'
-            });
+            this.process = this.spawnProcess(cmdArgs, spawnEnv);
         } catch (e: any) {
             this.emitError(new Error(`Failed to spawn codex at ${this.cliPath}: ${e.message}`));
             return;
@@ -131,10 +246,19 @@ export class CodexAgent extends BaseAgent {
             threadParams.threadId = this.sessionId;
         }
 
+        // Discover all relevant .git directories strictly for cwd's logical repo boundary (excluding add_dirs)
+        const gitDirs = findGitDirs(this.cwd || process.cwd());
+        const writableRoots: string[] = [...(this.addDirs || [])];
+        for (const gd of gitDirs) {
+            if (!writableRoots.includes(gd)) {
+                writableRoots.push(gd);
+            }
+        }
+
         // Configuration overrides
         const configOverrides: any = {};
-        if (this.addDirs && this.addDirs.length > 0) {
-            configOverrides["sandbox_workspace_write.writable_roots"] = this.addDirs;
+        if (writableRoots.length > 0) {
+            configOverrides["sandbox_workspace_write.writable_roots"] = writableRoots;
         }
         if (this.disallowedTools.includes('AskUserQuestion')) {
             configOverrides["features.default_mode_request_user_input"] = false;
@@ -142,6 +266,27 @@ export class CodexAgent extends BaseAgent {
 
         if (Object.keys(configOverrides).length > 0) {
             threadParams.config = configOverrides;
+        }
+
+        // Map sandbox mode to Codex sandbox policy
+        const sandboxMap: Record<string, any> = {
+            'read-only': { type: 'readOnly' },
+            'workspace-write': {
+                type: 'workspaceWrite',
+                writableRoots,
+                networkAccess: false
+            },
+            'danger-full-access': { type: 'dangerFullAccess' }
+        };
+
+        if (this.sandboxMode && sandboxMap[this.sandboxMode]) {
+            threadParams.sandbox = sandboxMap[this.sandboxMode];
+        } else {
+            threadParams.sandbox = {
+                type: 'workspaceWrite',
+                writableRoots,
+                networkAccess: false
+            };
         }
 
         logger.info('CodexAgent starting thread', threadParams);

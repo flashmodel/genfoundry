@@ -13,7 +13,8 @@ export {
 
 // Agent Implementations & CLI Discovery
 export { ClaudeAgent, findClaudeCli } from './claude-agent';
-export { CodexAgent, findCodexCli } from './codex-agent';
+export { CodexAgent, findCodexCli, findGitDirs } from './codex-agent';
+export type { CodexSandboxMode } from './codex-agent';
 export { OpenCodeAgent, findOpenCodeCli } from './opencode-agent';
 export { PiAgent, findPiCli } from './pi-agent';
 

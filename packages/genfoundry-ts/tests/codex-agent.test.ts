@@ -1,7 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { CodexAgent, findCodexCli } from '../dist/index.js';
-import type { Message } from '../dist/index.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { CodexAgent, findCodexCli, findGitDirs } from '../dist/index.js';
+import type { Message, CodexSandboxMode } from '../dist/index.js';
 
 function createMockCodexAgent(initialSessionId?: string) {
     const agent = new CodexAgent('/workspace', undefined, undefined, undefined, initialSessionId);
@@ -238,5 +241,162 @@ describe('CodexAgent tests (parity with test_codex_msg.py)', () => {
     it('test_find_codex_cli', () => {
         const cli = findCodexCli();
         assert.ok(typeof cli === 'string' && cli.length > 0);
+    });
+
+    it('test_find_git_dirs', () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-dirs-test-'));
+        try {
+            // 1. Root .git
+            const rootGit = path.join(tempDir, '.git');
+            fs.mkdirSync(rootGit, { recursive: true });
+
+            // 2. Submodule .git
+            const subDir = path.join(tempDir, 'pkg', 'subpkg');
+            const subGit = path.join(subDir, '.git');
+            fs.mkdirSync(subGit, { recursive: true });
+
+            // 3. Worktree pointer file with commondir
+            const worktreeDir = path.join(tempDir, 'pkg', 'worktree');
+            const targetGitDir = path.join(tempDir, 'real_git_dir', 'worktrees', 'wt1');
+            const commonGitDir = path.join(tempDir, 'real_git_dir');
+            fs.mkdirSync(worktreeDir, { recursive: true });
+            fs.mkdirSync(targetGitDir, { recursive: true });
+
+            fs.writeFileSync(path.join(worktreeDir, '.git'), `gitdir: ${targetGitDir}\n`);
+            fs.writeFileSync(path.join(targetGitDir, 'commondir'), '../..\n');
+
+            const dirs = findGitDirs(tempDir);
+            assert.ok(dirs.includes(rootGit));
+            assert.ok(dirs.includes(subGit));
+            assert.ok(dirs.includes(targetGitDir));
+            assert.ok(dirs.includes(commonGitDir));
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    it('test_find_git_dirs_empty_for_invalid_path', () => {
+        assert.deepEqual(findGitDirs(undefined), []);
+        assert.deepEqual(findGitDirs('/non/existent/path/xyz-123'), []);
+    });
+
+    it('test_codex_sandbox_mode_default', async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-test-'));
+        try {
+            const rootGit = path.join(tempDir, '.git');
+            fs.mkdirSync(rootGit, { recursive: true });
+
+            const agent = new CodexAgent(tempDir, undefined, undefined, ['/extra/dir']);
+            const rpcCalls: any[] = [];
+
+            const fakeProcess: any = {
+                stdin: { write: () => true },
+                stdout: null,
+                stderr: null,
+                kill: () => {},
+                on: () => {},
+            };
+
+            (agent as any).spawnProcess = () => fakeProcess;
+            (agent as any).rpcRequest = async (method: string, params: any) => {
+                rpcCalls.push({ method, params });
+                if (method === 'thread/start') {
+                    return { thread: { id: 'thread-001' } };
+                }
+                return { capabilities: {} };
+            };
+            (agent as any).rpcNotify = async () => {};
+            (agent as any).fetchModels = async () => {};
+
+            await agent.connect();
+
+            const startCall = rpcCalls.find(c => c.method === 'thread/start');
+            assert.ok(startCall, 'thread/start should have been called');
+
+            // Default sandbox mode should be workspaceWrite with git and add_dirs writable
+            assert.equal(startCall.params.sandbox.type, 'workspaceWrite');
+            assert.equal(startCall.params.sandbox.networkAccess, false);
+            assert.ok(startCall.params.sandbox.writableRoots.includes('/extra/dir'));
+            assert.ok(startCall.params.sandbox.writableRoots.includes(rootGit));
+
+            // Config overrides should also include writable roots
+            assert.ok(startCall.params.config['sandbox_workspace_write.writable_roots'].includes('/extra/dir'));
+            assert.ok(startCall.params.config['sandbox_workspace_write.writable_roots'].includes(rootGit));
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    it('test_codex_sandbox_mode_read_only', async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-ro-test-'));
+        try {
+            const agent = new CodexAgent(tempDir, undefined, undefined, undefined, undefined, 'read-only');
+            assert.equal(agent.getSandboxMode(), 'read-only');
+
+            const rpcCalls: any[] = [];
+            const fakeProcess: any = {
+                stdin: { write: () => true },
+                stdout: null,
+                stderr: null,
+                kill: () => {},
+                on: () => {},
+            };
+
+            (agent as any).spawnProcess = () => fakeProcess;
+            (agent as any).rpcRequest = async (method: string, params: any) => {
+                rpcCalls.push({ method, params });
+                if (method === 'thread/start') {
+                    return { thread: { id: 'thread-001' } };
+                }
+                return { capabilities: {} };
+            };
+            (agent as any).rpcNotify = async () => {};
+            (agent as any).fetchModels = async () => {};
+
+            await agent.connect();
+
+            const startCall = rpcCalls.find(c => c.method === 'thread/start');
+            assert.ok(startCall);
+            assert.deepEqual(startCall.params.sandbox, { type: 'readOnly' });
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    it('test_codex_sandbox_mode_danger_full_access', async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-dfa-test-'));
+        try {
+            const agent = new CodexAgent(tempDir);
+            agent.setSandboxMode('danger-full-access');
+            assert.equal(agent.getSandboxMode(), 'danger-full-access');
+
+            const rpcCalls: any[] = [];
+            const fakeProcess: any = {
+                stdin: { write: () => true },
+                stdout: null,
+                stderr: null,
+                kill: () => {},
+                on: () => {},
+            };
+
+            (agent as any).spawnProcess = () => fakeProcess;
+            (agent as any).rpcRequest = async (method: string, params: any) => {
+                rpcCalls.push({ method, params });
+                if (method === 'thread/start') {
+                    return { thread: { id: 'thread-001' } };
+                }
+                return { capabilities: {} };
+            };
+            (agent as any).rpcNotify = async () => {};
+            (agent as any).fetchModels = async () => {};
+
+            await agent.connect();
+
+            const startCall = rpcCalls.find(c => c.method === 'thread/start');
+            assert.ok(startCall);
+            assert.deepEqual(startCall.params.sandbox, { type: 'dangerFullAccess' });
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
     });
 });
