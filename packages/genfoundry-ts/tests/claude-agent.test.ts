@@ -157,4 +157,54 @@ describe('ClaudeAgent tests', () => {
         await agent.setModel('claude-3-5-haiku');
         assert.equal(agent.getModel(), 'claude-3-5-haiku');
     });
+
+    it('test_claude_rewind_files', async () => {
+        const agent = new ClaudeAgent('/workspace');
+
+        // Should throw when not connected
+        await assert.rejects(
+            async () => {
+                await agent.rewindFiles('user-msg-001');
+            },
+            {
+                name: 'Error',
+                message: 'Client is not connected. Call connect() first.'
+            }
+        );
+
+        // When connected, sends control request
+        (agent as any).isConnected = true;
+        let sentRequest: any = null;
+        (agent as any).sendControlRequest = async (req: any) => {
+            sentRequest = req;
+        };
+
+        await agent.rewindFiles('user-msg-002');
+        assert.deepEqual(sentRequest, {
+            subtype: 'rewind_files',
+            user_message_id: 'user-msg-002'
+        });
+    });
+
+    it('test_claude_enable_file_checkpoint_env', async () => {
+        const agent = new ClaudeAgent({
+            cwd: '/workspace',
+            enableFileCheckpoint: false
+        });
+
+        assert.equal(agent.getEnableFileCheckpoint(), false);
+
+        let capturedEnv: Record<string, string> = {};
+        (agent as any).spawnProcess = (_args: string[], env: Record<string, string>) => {
+            capturedEnv = env;
+            return { stdout: null, stderr: null, kill: () => {}, on: () => {} } as any;
+        };
+
+        await agent.connect();
+        assert.equal(capturedEnv['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING'], undefined);
+
+        // Re-enable
+        agent.setEnableFileCheckpoint(true);
+        assert.equal(agent.getEnableFileCheckpoint(), true);
+    });
 });

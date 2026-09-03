@@ -76,6 +76,7 @@ export abstract class BaseAgent {
     protected planMode: boolean = false;
     protected approveMode: 'default' | 'accept-all' | 'allow-edit' = 'default';
     protected disallowedTools: string[] = [];
+    protected enableFileCheckpoint: boolean = true;
 
     constructor(
         cwdOrOptions?: string | AgentOptions,
@@ -94,6 +95,9 @@ export abstract class BaseAgent {
             this.planMode = opts.planMode || false;
             this.approveMode = opts.approveMode || 'default';
             this.disallowedTools = opts.disallowedTools ? [...opts.disallowedTools] : [];
+            if (opts.enableFileCheckpoint !== undefined) {
+                this.enableFileCheckpoint = opts.enableFileCheckpoint;
+            }
         } else {
             this.cwd = cwdOrOptions;
             this.env = env;
@@ -105,6 +109,14 @@ export abstract class BaseAgent {
 
     public getModel(): string | null {
         return this.model;
+    }
+
+    public getEnableFileCheckpoint(): boolean {
+        return this.enableFileCheckpoint;
+    }
+
+    public setEnableFileCheckpoint(enable: boolean): void {
+        this.enableFileCheckpoint = enable;
     }
 
     abstract connect(prompt?: string): Promise<void>;

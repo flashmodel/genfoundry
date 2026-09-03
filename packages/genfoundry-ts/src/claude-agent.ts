@@ -382,7 +382,9 @@ export class ClaudeAgent extends BaseAgent {
 
         const spawnEnv: Record<string, string> = { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'sdk-js', ...this.env };
         // Enable SDK file checkpointing so rewind can restore on-disk files.
-        spawnEnv['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING'] = 'true';
+        if (this.enableFileCheckpoint) {
+            spawnEnv['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING'] = 'true';
+        }
 
         this.process = this.spawnProcess(cmdArgs, spawnEnv);
 
@@ -572,16 +574,28 @@ export class ClaudeAgent extends BaseAgent {
     }
 
     /**
+     * Restore all files modified after the given user message back to their pre-message state.
+     * Sends a rewind_files control request to the active Claude CLI subprocess.
+     */
+    async rewindFiles(userMessageId: string): Promise<void> {
+        if (!this.isConnected) {
+            throw new Error('Client is not connected. Call connect() first.');
+        }
+
+        await this.sendControlRequest({
+            subtype: 'rewind_files',
+            user_message_id: userMessageId,
+        });
+    }
+
+    /**
      * Rewind to the given user message: restore files then fork the session.
      * Returns the new (forked) session id to resume from.
      */
     async rewind(userMessageId: string): Promise<string | null> {
         // 1. Restore on-disk files to their pre-message state (live subprocess).
         if (this.isConnected) {
-            await this.sendControlRequest({
-                subtype: 'rewind_files',
-                user_message_id: userMessageId,
-            });
+            await this.rewindFiles(userMessageId);
             // Give the CLI a moment to apply the file checkpoint before we fork.
             await new Promise(res => setTimeout(res, 150));
         }
