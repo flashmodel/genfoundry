@@ -1,0 +1,39 @@
+{
+  "name": "@genfoundry/ts",
+  "version": "0.1.0",
+  "description": "GenFoundry agent supervisor SDK for TypeScript and Node.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "compile": "tsc",
+    "watch": "tsc --watch",
+    "prepack": "npm run build",
+    "test": "npm run build && node --test tests/*.test.ts"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "supervisor",
+    "claude-code",
+    "codex",
+    "opencode",
+    "pi",
+    "process-manager"
+  ],
+  "author": "termmate.app",
+  "homepage": "https://termmate.app",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "diff": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.2",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.5"
+  }
+}
