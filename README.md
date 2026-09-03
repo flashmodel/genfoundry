@@ -17,19 +17,6 @@ GenFoundry acts as the **Supervisor Layer** between client applications (such as
 - **Session Continuity**: Discovers workspace session histories, extracts session tails, and supports stateful turn rewinds.
 - **Environment & CLI Discovery**: Cross-platform resolution of agent binaries and non-interactive automated installation scripts.
 
-## Repository Structure
-
-To support multi-language implementations while keeping the top-level directory clean and extensible, implementations reside under `packages/`:
-
-```
-genfoundry/
-├── packages/
-│   ├── genfoundry-ts/       # TypeScript / Node.js supervisor implementation
-│   └── (genfoundry-py/)     # Python supervisor implementation (future)
-├── .gitignore
-└── README.md
-```
-
 ## Packages
 
 - **[`@genfoundry/ts`](./packages/genfoundry-ts)**: Pure Node.js implementation with minimal dependencies, fully typed with TypeScript.
