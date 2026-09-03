@@ -138,12 +138,105 @@ export abstract class BaseAgent {
         this.messageCallbacks.push(callback);
     }
 
+    public offMessage(callback: (msg: Message) => void) {
+        this.messageCallbacks = this.messageCallbacks.filter(cb => cb !== callback);
+    }
+
     public onError(callback: (err: Error) => void) {
         this.errorCallbacks.push(callback);
     }
 
+    public offError(callback: (err: Error) => void) {
+        this.errorCallbacks = this.errorCallbacks.filter(cb => cb !== callback);
+    }
+
     public onClose(callback: (code: number | null) => void) {
         this.closeCallbacks.push(callback);
+    }
+
+    public offClose(callback: (code: number | null) => void) {
+        this.closeCallbacks = this.closeCallbacks.filter(cb => cb !== callback);
+    }
+
+    private static readonly CLOSE_SENTINEL = Symbol('CLOSE_SENTINEL');
+
+    /**
+     * Receive messages as an async iterable stream.
+     * Supports `for await (const msg of agent.receiveMessages())` or `for await (const msg of agent)`.
+     *
+     * @param options Optional configuration:
+     *   - `stopOnTurnEnd`: if true, finishes iteration after receiving a 'stop' or 'result' message.
+     */
+    public async *receiveMessages(options?: { stopOnTurnEnd?: boolean }): AsyncIterableIterator<Message> {
+        const queue: (Message | Error | typeof BaseAgent.CLOSE_SENTINEL)[] = [];
+        let notify: (() => void) | null = null;
+        let closed = false;
+
+        const messageHandler = (msg: Message) => {
+            queue.push(msg);
+            if (notify) {
+                const fn = notify;
+                notify = null;
+                fn();
+            }
+        };
+
+        const errorHandler = (err: Error) => {
+            queue.push(err);
+            if (notify) {
+                const fn = notify;
+                notify = null;
+                fn();
+            }
+        };
+
+        const closeHandler = (_code: number | null) => {
+            closed = true;
+            queue.push(BaseAgent.CLOSE_SENTINEL);
+            if (notify) {
+                const fn = notify;
+                notify = null;
+                fn();
+            }
+        };
+
+        this.onMessage(messageHandler);
+        this.onError(errorHandler);
+        this.onClose(closeHandler);
+
+        try {
+            while (true) {
+                while (queue.length > 0) {
+                    const item = queue.shift()!;
+                    if (item === BaseAgent.CLOSE_SENTINEL) {
+                        return;
+                    }
+                    if (item instanceof Error) {
+                        throw item;
+                    }
+                    yield item;
+                    if (options?.stopOnTurnEnd && (item.type === 'stop' || item.type === 'result')) {
+                        return;
+                    }
+                }
+
+                if (closed) {
+                    return;
+                }
+
+                await new Promise<void>((resolve) => {
+                    notify = resolve;
+                });
+            }
+        } finally {
+            this.offMessage(messageHandler);
+            this.offError(errorHandler);
+            this.offClose(closeHandler);
+        }
+    }
+
+    public [Symbol.asyncIterator](): AsyncIterableIterator<Message> {
+        return this.receiveMessages();
     }
 
     protected emitMessage(msg: Message) {
