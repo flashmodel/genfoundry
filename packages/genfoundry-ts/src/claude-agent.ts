@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import { BaseAgent, Message, PermissionResult, SessionInfo, SessionTail } from './base-agent';
+import type { AgentOptions } from './base-agent';
 import * as readline from 'readline';
 import * as os from 'os';
 import * as path from 'path';
@@ -290,19 +291,28 @@ export class ClaudeAgent extends BaseAgent {
     private allowedTools: string[] = [];
 
     constructor(
-        cwd: string,
+        cwdOrOptions?: string | AgentOptions,
         cliPath?: string,
         env?: Record<string, string>,
         addDirs?: string[],
         sessionId?: string,
         systemPrompt?: string,
-        allowedTools?: string[]
+        allowedTools?: string[],
+        model?: string | null
     ) {
-        super(cwd, env, addDirs, sessionId);
-        this.resumeSessionId = sessionId;
-        this.cliPath = cliPath || findClaudeCli();
-        this.systemPrompt = systemPrompt;
-        this.allowedTools = allowedTools || [];
+        super(cwdOrOptions, env, addDirs, sessionId, model);
+        if (typeof cwdOrOptions === 'object' && cwdOrOptions !== null) {
+            const opts = cwdOrOptions;
+            this.resumeSessionId = opts.sessionId;
+            this.cliPath = opts.cliPath || findClaudeCli();
+            this.systemPrompt = opts.systemPrompt;
+            this.allowedTools = opts.allowedTools ? [...opts.allowedTools] : [];
+        } else {
+            this.resumeSessionId = sessionId;
+            this.cliPath = cliPath || findClaudeCli();
+            this.systemPrompt = systemPrompt;
+            this.allowedTools = allowedTools ? [...allowedTools] : [];
+        }
     }
 
     public setSystemPrompt(prompt?: string): void {
@@ -350,6 +360,10 @@ export class ClaudeAgent extends BaseAgent {
 
         if (this.sessionId) {
             cmdArgs.push('--resume', this.sessionId);
+        }
+
+        if (this.model) {
+            cmdArgs.push('--model', this.model);
         }
 
         if (this.systemPrompt) {
@@ -515,10 +529,11 @@ export class ClaudeAgent extends BaseAgent {
     }
 
     async setModel(model: string | null): Promise<void> {
+        this.model = model || null;
         if (this.isConnected) {
             await this.sendControlRequest({
                 subtype: 'set_model',
-                model: model || null
+                model: this.model
             });
         }
     }

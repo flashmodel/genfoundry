@@ -43,18 +43,68 @@ export interface PermissionResult {
     message?: string;
 }
 
+export interface AgentOptions {
+    cwd?: string;
+    cliPath?: string;
+    systemPrompt?: string;
+    maxTurns?: number;
+    allowedTools?: string[];
+    disallowedTools?: string[];
+    permissionMode?: string;
+    model?: string | null;
+    planMode?: boolean;
+    sandboxMode?: string;
+    approveMode?: 'default' | 'accept-all' | 'allow-edit';
+    sessionId?: string;
+    extraEnv?: Record<string, string>;
+    env?: Record<string, string>;
+    addDirs?: string[];
+    debugAgentMessage?: boolean;
+    enableFileCheckpoint?: boolean;
+}
+
 export abstract class BaseAgent {
     protected messageCallbacks: ((msg: Message) => void)[] = [];
     protected errorCallbacks: ((err: Error) => void)[] = [];
     protected closeCallbacks: ((code: number | null) => void)[] = [];
 
+    protected cwd?: string;
+    protected env?: Record<string, string>;
+    protected addDirs: string[] = [];
+    protected sessionId?: string;
+    protected model: string | null = null;
     protected planMode: boolean = false;
     protected approveMode: 'default' | 'accept-all' | 'allow-edit' = 'default';
-    protected addDirs: string[] = [];
     protected disallowedTools: string[] = [];
 
-    constructor(protected cwd?: string, protected env?: Record<string, string>, addDirs?: string[], protected sessionId?: string) {
-        this.addDirs = addDirs || [];
+    constructor(
+        cwdOrOptions?: string | AgentOptions,
+        env?: Record<string, string>,
+        addDirs?: string[],
+        sessionId?: string,
+        model?: string | null
+    ) {
+        if (typeof cwdOrOptions === 'object' && cwdOrOptions !== null) {
+            const opts = cwdOrOptions;
+            this.cwd = opts.cwd;
+            this.env = opts.extraEnv || opts.env;
+            this.addDirs = opts.addDirs ? [...opts.addDirs] : [];
+            this.sessionId = opts.sessionId;
+            this.model = opts.model || null;
+            this.planMode = opts.planMode || false;
+            this.approveMode = opts.approveMode || 'default';
+            this.disallowedTools = opts.disallowedTools ? [...opts.disallowedTools] : [];
+        } else {
+            this.cwd = cwdOrOptions;
+            this.env = env;
+            this.addDirs = addDirs ? [...addDirs] : [];
+            this.sessionId = sessionId;
+            this.model = model || null;
+        }
+    }
+
+    public getModel(): string | null {
+        return this.model;
     }
 
     abstract connect(prompt?: string): Promise<void>;

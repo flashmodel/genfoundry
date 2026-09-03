@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { ClaudeAgent, findClaudeCli } from '../dist/index.js';
+import type { AgentOptions } from '../dist/index.js';
 
 describe('ClaudeAgent tests', () => {
     it('test_find_claude_cli', () => {
@@ -31,6 +32,7 @@ describe('ClaudeAgent tests', () => {
         assert.ok(capturedArgs.includes('--permission-prompt-tool=stdio'));
         assert.equal(capturedArgs.includes('--system-prompt'), false);
         assert.equal(capturedArgs.includes('--allowedTools'), false);
+        assert.equal(capturedArgs.includes('--model'), false);
     });
 
     it('test_claude_system_prompt_via_constructor_and_setter', async () => {
@@ -112,5 +114,47 @@ describe('ClaudeAgent tests', () => {
         const allowedToolsIdx = capturedArgs.indexOf('--allowedTools');
         assert.ok(allowedToolsIdx !== -1);
         assert.equal(capturedArgs[allowedToolsIdx + 1], 'WebSearch,Bash');
+    });
+
+    it('test_claude_agent_options_and_model', async () => {
+        const options: AgentOptions = {
+            cwd: '/workspace',
+            model: 'claude-3-7-sonnet',
+            systemPrompt: 'System prompt via options',
+            allowedTools: ['Bash', 'Read'],
+            planMode: true,
+        };
+
+        const agent = new ClaudeAgent(options);
+        assert.equal(agent.getModel(), 'claude-3-7-sonnet');
+        assert.equal(agent.getSystemPrompt(), 'System prompt via options');
+        assert.deepEqual(agent.getAllowedTools(), ['Bash', 'Read']);
+
+        let capturedArgs: string[] = [];
+        (agent as any).spawnProcess = (cmdArgs: string[]) => {
+            capturedArgs = cmdArgs;
+            return { stdout: null, stderr: null, kill: () => {}, on: () => {} } as any;
+        };
+
+        await agent.connect();
+
+        const modelIdx = capturedArgs.indexOf('--model');
+        assert.ok(modelIdx !== -1, '--model flag should be present');
+        assert.equal(capturedArgs[modelIdx + 1], 'claude-3-7-sonnet');
+
+        const promptIdx = capturedArgs.indexOf('--system-prompt');
+        assert.ok(promptIdx !== -1);
+        assert.equal(capturedArgs[promptIdx + 1], 'System prompt via options');
+
+        const toolsIdx = capturedArgs.indexOf('--allowedTools');
+        assert.ok(toolsIdx !== -1);
+        assert.equal(capturedArgs[toolsIdx + 1], 'Bash,Read');
+
+        assert.ok(capturedArgs.includes('--permission-mode'));
+        assert.ok(capturedArgs.includes('plan'));
+
+        // Test setModel
+        await agent.setModel('claude-3-5-haiku');
+        assert.equal(agent.getModel(), 'claude-3-5-haiku');
     });
 });

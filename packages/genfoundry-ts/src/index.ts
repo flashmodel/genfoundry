@@ -10,6 +10,7 @@ export {
     AssistantMessage,
     PermissionResult,
 } from './base-agent';
+export type { AgentOptions } from './base-agent';
 
 // Agent Implementations & CLI Discovery
 export { ClaudeAgent, findClaudeCli } from './claude-agent';

@@ -7,6 +7,7 @@ import * as path from 'path';
 import { createTwoFilesPatch } from 'diff';
 
 import { BaseAgent, PermissionResult, SessionInfo, SessionTail } from './base-agent';
+import type { AgentOptions } from './base-agent';
 import { logger } from './logger';
 
 const SERVER_URL_RE = /opencode server listening on\s+(https?:\/\/[^\s]+)/i;
@@ -390,7 +391,6 @@ export class OpenCodeAgent extends BaseAgent {
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private reconnectDelay = 250;
     private eventEnv: NodeJS.ProcessEnv | null = null;
-    private model: string | null = null;
     private turnActive = false;
     private turnPlanMode = false;
     private usesSessionStatus = false;
@@ -405,9 +405,20 @@ export class OpenCodeAgent extends BaseAgent {
     private diffCache = new Map<string, string>();
     private cliPath: string;
 
-    constructor(cwd: string, cliPath?: string, env?: Record<string, string>, addDirs?: string[], sessionId?: string) {
-        super(cwd, env, addDirs, sessionId);
-        this.cliPath = cliPath || findOpenCodeCli();
+    constructor(
+        cwdOrOptions?: string | AgentOptions,
+        cliPath?: string,
+        env?: Record<string, string>,
+        addDirs?: string[],
+        sessionId?: string,
+        model?: string | null
+    ) {
+        super(cwdOrOptions, env, addDirs, sessionId, model);
+        if (typeof cwdOrOptions === 'object' && cwdOrOptions !== null) {
+            this.cliPath = cwdOrOptions.cliPath || findOpenCodeCli();
+        } else {
+            this.cliPath = cliPath || findOpenCodeCli();
+        }
     }
 
     async connect(prompt?: string): Promise<void> {

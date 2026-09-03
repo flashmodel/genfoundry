@@ -1,5 +1,6 @@
 import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { BaseAgent, Message, PermissionResult, SessionInfo, SessionTail } from './base-agent';
+import type { AgentOptions } from './base-agent';
 import * as readline from 'readline';
 import * as os from 'os';
 import * as path from 'path';
@@ -142,23 +143,32 @@ export class CodexAgent extends BaseAgent {
     private pendingResponses: Map<number, { resolve: (result: any) => void, reject: (err: any) => void }> = new Map();
     private itemCache: Map<string, any> = new Map();
     private planText: string = "";
-    private model: string | null = null;
     private cliPath: string;
     private sandboxMode?: CodexSandboxMode;
 
     constructor(
-        cwd: string,
+        cwdOrOptions?: string | AgentOptions,
         cliPath?: string,
         env?: Record<string, string>,
         addDirs?: string[],
         sessionId?: string,
-        sandboxMode?: CodexSandboxMode
+        sandboxMode?: CodexSandboxMode,
+        model?: string | null
     ) {
-        super(cwd, env, addDirs, sessionId);
-        this.cliPath = cliPath || findCodexCli();
-        this.sandboxMode = sandboxMode;
-        if (this.sessionId) {
-            this.threadId = this.sessionId;
+        super(cwdOrOptions, env, addDirs, sessionId, model);
+        if (typeof cwdOrOptions === 'object' && cwdOrOptions !== null) {
+            const opts = cwdOrOptions;
+            this.cliPath = opts.cliPath || findCodexCli();
+            this.sandboxMode = opts.sandboxMode as CodexSandboxMode;
+            if (this.sessionId) {
+                this.threadId = this.sessionId;
+            }
+        } else {
+            this.cliPath = cliPath || findCodexCli();
+            this.sandboxMode = sandboxMode;
+            if (this.sessionId) {
+                this.threadId = this.sessionId;
+            }
         }
     }
 
@@ -244,6 +254,10 @@ export class CodexAgent extends BaseAgent {
 
         if (this.sessionId) {
             threadParams.threadId = this.sessionId;
+        }
+
+        if (this.model) {
+            threadParams.model = this.model;
         }
 
         // Discover all relevant .git directories strictly for cwd's logical repo boundary (excluding add_dirs)

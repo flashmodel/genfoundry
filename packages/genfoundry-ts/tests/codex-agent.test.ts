@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodexAgent, findCodexCli, findGitDirs } from '../dist/index.js';
-import type { Message, CodexSandboxMode } from '../dist/index.js';
+import type { Message, CodexSandboxMode, AgentOptions } from '../dist/index.js';
 
 function createMockCodexAgent(initialSessionId?: string) {
     const agent = new CodexAgent('/workspace', undefined, undefined, undefined, initialSessionId);
@@ -395,6 +395,56 @@ describe('CodexAgent tests (parity with test_codex_msg.py)', () => {
             const startCall = rpcCalls.find(c => c.method === 'thread/start');
             assert.ok(startCall);
             assert.deepEqual(startCall.params.sandbox, { type: 'dangerFullAccess' });
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    it('test_codex_agent_options_and_model', async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-opts-test-'));
+        try {
+            const options: AgentOptions = {
+                cwd: tempDir,
+                model: 'o3-mini',
+                sandboxMode: 'read-only' as CodexSandboxMode,
+                sessionId: 'thread-existing',
+            };
+
+            const agent = new CodexAgent(options);
+            assert.equal(agent.getModel(), 'o3-mini');
+            assert.equal(agent.getSandboxMode(), 'read-only');
+
+            const rpcCalls: any[] = [];
+            const fakeProcess: any = {
+                stdin: { write: () => true },
+                stdout: null,
+                stderr: null,
+                kill: () => {},
+                on: () => {},
+            };
+
+            (agent as any).spawnProcess = () => fakeProcess;
+            (agent as any).rpcRequest = async (method: string, params: any) => {
+                rpcCalls.push({ method, params });
+                if (method === 'thread/start' || method === 'thread/resume') {
+                    return { thread: { id: 'thread-001' } };
+                }
+                return { capabilities: {} };
+            };
+            (agent as any).rpcNotify = async () => {};
+            (agent as any).fetchModels = async () => {};
+
+            await agent.connect();
+
+            const startCall = rpcCalls.find(c => c.method === 'thread/start' || c.method === 'thread/resume');
+            assert.ok(startCall);
+            assert.equal(startCall.params.model, 'o3-mini');
+            assert.equal(startCall.params.threadId, 'thread-existing');
+            assert.deepEqual(startCall.params.sandbox, { type: 'readOnly' });
+
+            // Test setModel
+            await agent.setModel('o1-preview');
+            assert.equal(agent.getModel(), 'o1-preview');
         } finally {
             fs.rmSync(tempDir, { recursive: true, force: true });
         }

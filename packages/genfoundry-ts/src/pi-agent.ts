@@ -1,5 +1,6 @@
 import { spawn, ChildProcess, exec } from 'child_process';
 import { BaseAgent, Message, PermissionResult, SessionInfo, SessionTail } from './base-agent';
+import type { AgentOptions } from './base-agent';
 import * as readline from 'readline';
 import * as os from 'os';
 import * as path from 'path';
@@ -61,9 +62,20 @@ export class PiAgent extends BaseAgent {
     private isConnected: boolean = false;
     private cliPath: string;
 
-    constructor(cwd: string, cliPath?: string, env?: Record<string, string>, addDirs?: string[], sessionId?: string) {
-        super(cwd, env, addDirs, sessionId);
-        this.cliPath = cliPath || findPiCli();
+    constructor(
+        cwdOrOptions?: string | AgentOptions,
+        cliPath?: string,
+        env?: Record<string, string>,
+        addDirs?: string[],
+        sessionId?: string,
+        model?: string | null
+    ) {
+        super(cwdOrOptions, env, addDirs, sessionId, model);
+        if (typeof cwdOrOptions === 'object' && cwdOrOptions !== null) {
+            this.cliPath = cwdOrOptions.cliPath || findPiCli();
+        } else {
+            this.cliPath = cliPath || findPiCli();
+        }
     }
 
     private async getSessionFlag(): Promise<string> {
@@ -97,6 +109,10 @@ export class PiAgent extends BaseAgent {
         logger.info(`PiAgent connecting with path: ${this.cliPath}`);
 
         const cmdArgs = ['--mode', 'rpc'];
+
+        if (this.model) {
+            cmdArgs.push('--model', this.model);
+        }
 
         if (this.sessionId) {
             const flag = await this.getSessionFlag();
@@ -431,6 +447,7 @@ export class PiAgent extends BaseAgent {
     }
 
     async setModel(model: string | null): Promise<void> {
+        this.model = model || null;
         if (!this.isConnected || !model) return;
         
         let provider = 'anthropic';

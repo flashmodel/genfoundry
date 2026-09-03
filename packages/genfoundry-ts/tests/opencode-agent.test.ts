@@ -1,7 +1,7 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { OpenCodeAgent, findOpenCodeCli, createWin32JobObject, closeWin32Handle } from '../dist/index.js';
-import type { Message, JobObjectHandle } from '../dist/index.js';
+import type { Message, JobObjectHandle, AgentOptions } from '../dist/index.js';
 
 describe('OpenCodeAgent tests (parity with test_opencode_agent.py)', () => {
     let agent: OpenCodeAgent;
@@ -273,6 +273,24 @@ describe('OpenCodeAgent tests (parity with test_opencode_agent.py)', () => {
         assert.equal(jobClosed, true);
         assert.equal((agent as any).jobHandle, null);
         assert.equal((agent as any).process, null);
+    });
+
+    it('test_opencode_agent_options_and_model', async () => {
+        const options: AgentOptions = {
+            cwd: '/workspace',
+            model: 'anthropic/claude-3-7-sonnet',
+            sessionId: 'ses_opts',
+            planMode: true,
+            approveMode: 'accept-all',
+            disallowedTools: ['DoomLoop'],
+        };
+
+        const agent = new OpenCodeAgent(options);
+        assert.equal(agent.getModel(), 'anthropic/claude-3-7-sonnet');
+
+        // Test setModel
+        await agent.setModel('openai/o3-mini');
+        assert.equal(agent.getModel(), 'openai/o3-mini');
     });
 });
 
