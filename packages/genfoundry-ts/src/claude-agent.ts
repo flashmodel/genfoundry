@@ -286,11 +286,47 @@ export class ClaudeAgent extends BaseAgent {
     // echo the root session id in its init message (overwriting this.sessionId),
     // so this is the reliable pointer to the JSONL file on disk for forking.
     private resumeSessionId?: string;
+    private systemPrompt?: string;
+    private allowedTools: string[] = [];
 
-    constructor(cwd: string, cliPath?: string, env?: Record<string, string>, addDirs?: string[], sessionId?: string) {
+    constructor(
+        cwd: string,
+        cliPath?: string,
+        env?: Record<string, string>,
+        addDirs?: string[],
+        sessionId?: string,
+        systemPrompt?: string,
+        allowedTools?: string[]
+    ) {
         super(cwd, env, addDirs, sessionId);
         this.resumeSessionId = sessionId;
         this.cliPath = cliPath || findClaudeCli();
+        this.systemPrompt = systemPrompt;
+        this.allowedTools = allowedTools || [];
+    }
+
+    public setSystemPrompt(prompt?: string): void {
+        this.systemPrompt = prompt;
+    }
+
+    public getSystemPrompt(): string | undefined {
+        return this.systemPrompt;
+    }
+
+    public setAllowedTools(tools?: string[]): void {
+        this.allowedTools = tools || [];
+    }
+
+    public getAllowedTools(): string[] {
+        return [...this.allowedTools];
+    }
+
+    protected spawnProcess(cmdArgs: string[], spawnEnv: NodeJS.ProcessEnv): ChildProcess {
+        return spawn(this.cliPath, cmdArgs, {
+            env: spawnEnv,
+            cwd: this.cwd || process.cwd(),
+            shell: process.platform === 'win32'
+        });
     }
 
     async connect(prompt?: string): Promise<void> {
@@ -316,6 +352,14 @@ export class ClaudeAgent extends BaseAgent {
             cmdArgs.push('--resume', this.sessionId);
         }
 
+        if (this.systemPrompt) {
+            cmdArgs.push('--system-prompt', this.systemPrompt);
+        }
+
+        if (this.allowedTools && this.allowedTools.length > 0) {
+            cmdArgs.push('--allowedTools', this.allowedTools.join(','));
+        }
+
         if (this.addDirs && this.addDirs.length > 0) {
             for (const dir of this.addDirs) {
                 cmdArgs.push('--add-dir', dir);
@@ -326,11 +370,7 @@ export class ClaudeAgent extends BaseAgent {
         // Enable SDK file checkpointing so rewind can restore on-disk files.
         spawnEnv['CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING'] = 'true';
 
-        this.process = spawn(this.cliPath, cmdArgs, {
-            env: spawnEnv,
-            cwd: this.cwd || process.cwd(),
-            shell: process.platform === 'win32'
-        });
+        this.process = this.spawnProcess(cmdArgs, spawnEnv);
 
         this.process.on('error', (err) => {
             logger.error(`ClaudeAgent process error: ${err.message}`);
