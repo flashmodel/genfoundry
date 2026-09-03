@@ -1,7 +1,7 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { OpenCodeAgent, findOpenCodeCli } from '../dist/index.js';
-import type { Message } from '../dist/index.js';
+import { OpenCodeAgent, findOpenCodeCli, createWin32JobObject, closeWin32Handle } from '../dist/index.js';
+import type { Message, JobObjectHandle } from '../dist/index.js';
 
 describe('OpenCodeAgent tests (parity with test_opencode_agent.py)', () => {
     let agent: OpenCodeAgent;
@@ -237,4 +237,42 @@ describe('OpenCodeAgent tests (parity with test_opencode_agent.py)', () => {
         assert.ok(toolUses[0].content.changes[0].diff.includes('-const x = 1;'));
         assert.ok(toolUses[0].content.changes[0].diff.includes('+const x = 2;'));
     });
+
+    it('test_win32_job_object_helpers', async () => {
+        // Invalid or zero PIDs safely return null
+        assert.equal(await createWin32JobObject(0), null);
+        assert.equal(await createWin32JobObject(undefined as any), null);
+
+        // Safe cleanup with null / undefined handles
+        assert.doesNotThrow(() => closeWin32Handle(null));
+        assert.doesNotThrow(() => closeWin32Handle(undefined));
+
+        // Closing a mock handle
+        let closed = false;
+        const mockHandle: JobObjectHandle = {
+            close: () => { closed = true; },
+        };
+        closeWin32Handle(mockHandle);
+        assert.equal(closed, true);
+    });
+
+    it('test_terminate_server_now', () => {
+        let jobClosed = false;
+        const mockJob: JobObjectHandle = {
+            close: () => { jobClosed = true; },
+        };
+        (agent as any).jobHandle = mockJob;
+        (agent as any).process = {
+            exitCode: 0,
+            pid: 1234,
+            kill: () => {},
+        };
+
+        agent.terminateServerNow();
+
+        assert.equal(jobClosed, true);
+        assert.equal((agent as any).jobHandle, null);
+        assert.equal((agent as any).process, null);
+    });
 });
+

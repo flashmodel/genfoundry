@@ -15,7 +15,8 @@ export {
 export { ClaudeAgent, findClaudeCli } from './claude-agent';
 export { CodexAgent, findCodexCli, findGitDirs } from './codex-agent';
 export type { CodexSandboxMode } from './codex-agent';
-export { OpenCodeAgent, findOpenCodeCli } from './opencode-agent';
+export { OpenCodeAgent, findOpenCodeCli, createWin32JobObject, closeWin32Handle } from './opencode-agent';
+export type { JobObjectHandle } from './opencode-agent';
 export { PiAgent, findPiCli } from './pi-agent';
 
 // Logging Adapter

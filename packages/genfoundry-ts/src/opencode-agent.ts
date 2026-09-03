@@ -125,7 +125,191 @@ function errorText(error: any): string {
     return String(error?.data?.message || error?.message || error?.name || JSON.stringify(error));
 }
 
-async function stopProcess(child: ChildProcess | null): Promise<void> {
+export interface JobObjectHandle {
+    close(): void;
+}
+
+export function closeWin32Handle(handle: JobObjectHandle | null | undefined): void {
+    if (handle) {
+        try {
+            handle.close();
+        } catch (err) {
+            logger.warn(`Failed to close Win32 Job Object handle: ${err}`);
+        }
+    }
+}
+
+const WIN32_JOB_HELPER_PS = `
+$code = @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class JobObjectHelper {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetInformationJobObject(IntPtr hJob, int JobObjectInfoClass, IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CloseHandle(IntPtr hObject);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct IO_COUNTERS {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryLimit;
+        public UIntPtr PeakJobMemoryLimit;
+    }
+
+    public static IntPtr CreateKillOnCloseJob() {
+        IntPtr hJob = CreateJobObject(IntPtr.Zero, null);
+        if (hJob == IntPtr.Zero) return IntPtr.Zero;
+
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+        info.BasicLimitInformation.LimitFlags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+        int length = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+        IntPtr pInfo = Marshal.AllocHGlobal(length);
+        try {
+            Marshal.StructureToPtr(info, pInfo, false);
+            if (!SetInformationJobObject(hJob, 9, pInfo, (uint)length)) {
+                CloseHandle(hJob);
+                return IntPtr.Zero;
+            }
+        } finally {
+            Marshal.FreeHGlobal(pInfo);
+        }
+        return hJob;
+    }
+
+    public static bool Assign(IntPtr hJob, int pid) {
+        IntPtr hProc = OpenProcess(0x0100 | 0x0001, false, pid); // PROCESS_SET_QUOTA | PROCESS_TERMINATE
+        if (hProc == IntPtr.Zero) return false;
+        try {
+            return AssignProcessToJobObject(hJob, hProc);
+        } finally {
+            CloseHandle(hProc);
+        }
+    }
+}
+'@
+try {
+    Add-Type -TypeDefinition $code -ErrorAction Stop
+    $job = [JobObjectHelper]::CreateKillOnCloseJob()
+    if ($job -eq [IntPtr]::Zero) { exit 1 }
+    $assigned = [JobObjectHelper]::Assign($job, [int]$args[0])
+    if (-not $assigned) { [JobObjectHelper]::CloseHandle($job); exit 2 }
+    Write-Output "JOB_ASSIGNED"
+    [Console]::In.ReadLine() | Out-Null
+    [JobObjectHelper]::CloseHandle($job)
+} catch {
+    exit 3
+}
+`;
+
+export function createWin32JobObject(pid: number): Promise<JobObjectHandle | null> {
+    if (process.platform !== 'win32' || !pid) {
+        return Promise.resolve(null);
+    }
+
+    return new Promise((resolve) => {
+        let resolved = false;
+        const encodedCmd = Buffer.from(WIN32_JOB_HELPER_PS, 'utf16le').toString('base64');
+        let ps: ChildProcess | null = null;
+        try {
+            ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedCmd, String(pid)], {
+                stdio: ['pipe', 'pipe', 'pipe'],
+                windowsHide: true,
+            });
+        } catch {
+            return resolve(null);
+        }
+
+        const timeout = setTimeout(() => {
+            if (!resolved) {
+                resolved = true;
+                resolve(null);
+            }
+        }, 5000);
+
+        let closed = false;
+        const handle: JobObjectHandle = {
+            close: () => {
+                if (closed) return;
+                closed = true;
+                try {
+                    ps?.stdin?.write('\n');
+                    ps?.stdin?.end();
+                } catch { /* ignore */ }
+                try {
+                    ps?.kill();
+                } catch { /* ignore */ }
+            }
+        };
+
+        ps.stdout?.on('data', (data) => {
+            if (!resolved && String(data).includes('JOB_ASSIGNED')) {
+                resolved = true;
+                clearTimeout(timeout);
+                logger.info(`OpenCode server pid=${pid} assigned to Windows Job Object`);
+                resolve(handle);
+            }
+        });
+
+        ps.once('error', () => {
+            if (!resolved) {
+                resolved = true;
+                clearTimeout(timeout);
+                resolve(null);
+            }
+        });
+
+        ps.once('close', () => {
+            if (!resolved) {
+                resolved = true;
+                clearTimeout(timeout);
+                resolve(null);
+            }
+        });
+    });
+}
+
+async function stopProcess(child: ChildProcess | null, jobHandle?: JobObjectHandle | null): Promise<void> {
+    if (jobHandle) {
+        closeWin32Handle(jobHandle);
+    }
     if (!child || child.exitCode !== null || !child.pid) return;
     if (process.platform === 'win32') {
         await new Promise<void>(resolve => {
@@ -138,7 +322,10 @@ async function stopProcess(child: ChildProcess | null): Promise<void> {
     }
 }
 
-function stopProcessNow(child: ChildProcess | null): void {
+function stopProcessNow(child: ChildProcess | null, jobHandle?: JobObjectHandle | null): void {
+    if (jobHandle) {
+        closeWin32Handle(jobHandle);
+    }
     if (!child || child.exitCode !== null || !child.pid) return;
     if (process.platform === 'win32') {
         spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
@@ -156,19 +343,23 @@ function stopProcessNow(child: ChildProcess | null): void {
     }
 }
 
-function startServer(cliPath: string, cwd: string | undefined, env: NodeJS.ProcessEnv): Promise<{ child: ChildProcess, url: string }> {
+function startServer(cliPath: string, cwd: string | undefined, env: NodeJS.ProcessEnv): Promise<{ child: ChildProcess, url: string, jobHandle: JobObjectHandle | null }> {
     return new Promise((resolve, reject) => {
         const child = spawn(cliPath, ['serve', '--hostname=127.0.0.1', '--port=0'], {
             cwd: cwd || process.cwd(), env, windowsHide: true, detached: process.platform !== 'win32', shell: process.platform === 'win32',
         });
         let output = '';
         let settled = false;
+        let jobHandle: JobObjectHandle | null = null;
+        if (child.pid && process.platform === 'win32') {
+            void createWin32JobObject(child.pid).then(h => { jobHandle = h; });
+        }
         const timeout = setTimeout(() => fail(new Error(`Timed out starting OpenCode server${output ? `: ${output.trim()}` : ''}`)), 10_000);
         const fail = (error: Error) => {
             if (settled) return;
             settled = true;
             clearTimeout(timeout);
-            void stopProcess(child);
+            void stopProcess(child, jobHandle);
             reject(error);
         };
         const consume = (chunk: any) => {
@@ -178,7 +369,7 @@ function startServer(cliPath: string, cwd: string | undefined, env: NodeJS.Proce
             if (match && !settled) {
                 settled = true;
                 clearTimeout(timeout);
-                resolve({ child, url: match[1].replace(/\/$/, '') });
+                resolve({ child, url: match[1].replace(/\/$/, ''), jobHandle });
             }
         };
         child.stdout?.on('data', consume);
@@ -192,6 +383,7 @@ function startServer(cliPath: string, cwd: string | undefined, env: NodeJS.Proce
 
 export class OpenCodeAgent extends BaseAgent {
     private process: ChildProcess | null = null;
+    private jobHandle: JobObjectHandle | null = null;
     private serverUrl: string | null = null;
     private connected = false;
     private eventRequest: http.ClientRequest | null = null;
@@ -224,6 +416,7 @@ export class OpenCodeAgent extends BaseAgent {
         logger.info(`Starting OpenCode server with path: ${this.cliPath}`);
         const server = await startServer(this.cliPath, this.cwd, env);
         this.process = server.child;
+        this.jobHandle = server.jobHandle || null;
         this.serverUrl = server.url;
         this.process.on('close', code => {
             if (this.connected) {
@@ -529,9 +722,15 @@ export class OpenCodeAgent extends BaseAgent {
         this.eventRequest?.destroy();
         this.eventRequest = null;
         const child = this.process;
+        const job = this.jobHandle;
         this.process = null;
+        this.jobHandle = null;
         this.serverUrl = null;
-        stopProcessNow(child);
+        stopProcessNow(child, job);
+    }
+
+    terminateServerNow(): void {
+        this.disconnect();
     }
 
     async setPlanMode(enabled: boolean): Promise<void> { this.planMode = enabled; if (!enabled) this.planText = ''; }
@@ -562,7 +761,7 @@ export class OpenCodeAgent extends BaseAgent {
         extraEnv: Record<string, string> | undefined, fn: (url: string, env: NodeJS.ProcessEnv) => Promise<T>): Promise<T> {
         const env = runtimeEnv(extraEnv);
         const server = await startServer(cliPath || findOpenCodeCli(), cwd, env);
-        try { return await fn(server.url, env); } finally { await stopProcess(server.child); }
+        try { return await fn(server.url, env); } finally { await stopProcess(server.child, server.jobHandle); }
     }
 
     static async listSessions(cwd?: string, cliPath?: string, extraEnv?: Record<string, string>): Promise<SessionInfo[]> {
